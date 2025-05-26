@@ -28,17 +28,20 @@ export default function TherapistDashboard({ navigation }) {
       // Connect socket
       const socket = socketService.connect();
       socketService.emit("therapist-connect", therapist.id);
+      console.log("Therapist connected to socket with ID:", therapist.id);
 
       // Listen for incoming calls
       socketService.on("incoming-call", (data) => {
+        console.log("Incoming call received:", data);
         setIncomingCall(data);
         setShowCallModal(true);
       });
-    }
 
-    return () => {
-      socketService.disconnect();
-    };
+      return () => {
+        socketService.off("incoming-call");
+        socketService.disconnect();
+      };
+    }
   }, [therapist]);
 
   const toggleAvailability = async () => {
@@ -47,38 +50,51 @@ export default function TherapistDashboard({ navigation }) {
         isAvailable: !isAvailable,
       });
       setIsAvailable(response.data.therapist.isAvailable);
+      console.log("Availability updated:", response.data.therapist.isAvailable);
     } catch (error) {
+      console.error("Error updating availability:", error);
       Alert.alert("Error", "Failed to update availability");
     }
   };
 
   const acceptCall = async () => {
+    console.log("Accepting call:", incomingCall);
     setShowCallModal(false);
 
     try {
-      await api.post(`/call/answer/${incomingCall.roomId.split("-")[1]}`);
+      const callId = incomingCall.roomId.split("-")[1];
+      await api.post(`/call/answer/${callId}`);
+      console.log("Call answered on server");
 
+      // Notify user that call was accepted
       socketService.emit("call-accepted", {
         userId: incomingCall.userId,
         therapistId: therapist.id,
         roomId: incomingCall.roomId,
       });
 
+      console.log("Navigating to call screen as receiver");
+      // Navigate to call screen as receiver (not initiator)
       navigation.navigate("Call", {
         roomId: incomingCall.roomId,
         userId: incomingCall.userId,
-        isInitiator: false,
+        isInitiator: false, // Therapist is the receiver
       });
     } catch (error) {
+      console.error("Error accepting call:", error);
       Alert.alert("Error", "Failed to accept call");
     }
   };
 
   const rejectCall = () => {
+    console.log("Rejecting call:", incomingCall);
     setShowCallModal(false);
+
     socketService.emit("call-rejected", {
       userId: incomingCall.userId,
+      therapistId: therapist.id,
     });
+
     setIncomingCall(null);
   };
 
@@ -119,14 +135,28 @@ export default function TherapistDashboard({ navigation }) {
             ? "You are visible to users and can receive calls"
             : "You are not visible to users"}
         </Text>
+
+        <View style={styles.statsContainer}>
+          <Text style={styles.statsTitle}>Today's Stats</Text>
+          <Text style={styles.statsText}>Calls: 0</Text>
+          <Text style={styles.statsText}>Earnings: 0 coins</Text>
+        </View>
       </View>
 
-      <Modal visible={showCallModal} transparent animationType="slide">
+      <Modal
+        visible={showCallModal}
+        transparent
+        animationType="slide"
+        onRequestClose={rejectCall}
+      >
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Incoming Call</Text>
             <Text style={styles.modalText}>
               {incomingCall?.userName || "User"} is calling...
+            </Text>
+            <Text style={styles.modalSubtext}>
+              Room: {incomingCall?.roomId}
             </Text>
             <View style={styles.modalButtons}>
               <TouchableOpacity
@@ -197,6 +227,28 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#666",
     textAlign: "center",
+    marginBottom: 30,
+  },
+  statsContainer: {
+    backgroundColor: "#fff",
+    padding: 20,
+    borderRadius: 8,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  statsTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 10,
+  },
+  statsText: {
+    fontSize: 16,
+    color: "#666",
+    marginBottom: 5,
   },
   modalContainer: {
     flex: 1,
@@ -209,17 +261,26 @@ const styles = StyleSheet.create({
     padding: 30,
     borderRadius: 10,
     width: "80%",
+    elevation: 5,
   },
   modalTitle: {
     fontSize: 24,
     fontWeight: "bold",
     marginBottom: 10,
     textAlign: "center",
+    color: "#333",
   },
   modalText: {
     fontSize: 18,
+    marginBottom: 10,
+    textAlign: "center",
+    color: "#666",
+  },
+  modalSubtext: {
+    fontSize: 12,
     marginBottom: 20,
     textAlign: "center",
+    color: "#999",
   },
   modalButtons: {
     flexDirection: "row",
