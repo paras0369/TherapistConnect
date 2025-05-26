@@ -8,31 +8,50 @@ import {
   StyleSheet,
   Alert,
   Modal,
+  StatusBar,
+  FlatList,
+  ScrollView,
+  Dimensions,
 } from "react-native";
 import { useSelector, useDispatch } from "react-redux";
 import { logout } from "../store/authSlice";
 import api from "../services/api";
 import socketService from "../services/socket";
+import LinearGradient from "react-native-linear-gradient";
+
+const { width } = Dimensions.get("window");
 
 export default function TherapistDashboard({ navigation }) {
   const [isAvailable, setIsAvailable] = useState(false);
   const [incomingCall, setIncomingCall] = useState(null);
   const [showCallModal, setShowCallModal] = useState(false);
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [callHistory, setCallHistory] = useState([]);
+  const [todayStats, setTodayStats] = useState({
+    callsToday: 0,
+    earningsToday: 0,
+    hoursToday: 0,
+  });
+  const [weeklyStats, setWeeklyStats] = useState({
+    callsWeek: 0,
+    earningsWeek: 0,
+    hoursWeek: 0,
+  });
   const { therapist } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
 
   useEffect(() => {
     if (therapist) {
       setIsAvailable(therapist.isAvailable);
+      fetchCallHistory();
+      fetchStats();
 
       // Connect socket
       const socket = socketService.connect();
       socketService.emit("therapist-connect", therapist.id);
-      console.log("Therapist connected to socket with ID:", therapist.id);
 
       // Listen for incoming calls
       socketService.on("incoming-call", (data) => {
-        console.log("Incoming call received:", data);
         setIncomingCall(data);
         setShowCallModal(true);
       });
@@ -44,105 +63,359 @@ export default function TherapistDashboard({ navigation }) {
     }
   }, [therapist]);
 
+  const fetchCallHistory = async () => {
+    try {
+      const response = await api.get("/therapist/call-history");
+      setCallHistory(response.data.calls || []);
+    } catch (error) {
+      console.error("Error fetching call history:", error);
+    }
+  };
+
+  const fetchStats = async () => {
+    try {
+      const response = await api.get("/therapist/stats");
+      setTodayStats(response.data.today || {});
+      setWeeklyStats(response.data.week || {});
+    } catch (error) {
+      console.error("Error fetching stats:", error);
+    }
+  };
+
   const toggleAvailability = async () => {
     try {
       const response = await api.put("/therapist/availability", {
         isAvailable: !isAvailable,
       });
       setIsAvailable(response.data.therapist.isAvailable);
-      console.log("Availability updated:", response.data.therapist.isAvailable);
     } catch (error) {
-      console.error("Error updating availability:", error);
       Alert.alert("Error", "Failed to update availability");
     }
   };
 
   const acceptCall = async () => {
-    console.log("Accepting call:", incomingCall);
     setShowCallModal(false);
-
     try {
       const callId = incomingCall.roomId.split("-")[1];
       await api.post(`/call/answer/${callId}`);
-      console.log("Call answered on server");
 
-      // Notify user that call was accepted
+      console.log(
+        "Call answered on server, joining room:",
+        incomingCall.roomId
+      );
+
+      // Join the room
+      socketService.emit("join-room", incomingCall.roomId);
+
       socketService.emit("call-accepted", {
         userId: incomingCall.userId,
         therapistId: therapist.id,
         roomId: incomingCall.roomId,
       });
 
-      console.log("Navigating to call screen as receiver");
-      // Navigate to call screen as receiver (not initiator)
       navigation.navigate("Call", {
         roomId: incomingCall.roomId,
         userId: incomingCall.userId,
-        isInitiator: false, // Therapist is the receiver
+        isInitiator: false,
       });
     } catch (error) {
-      console.error("Error accepting call:", error);
       Alert.alert("Error", "Failed to accept call");
     }
   };
 
   const rejectCall = () => {
-    console.log("Rejecting call:", incomingCall);
     setShowCallModal(false);
-
     socketService.emit("call-rejected", {
       userId: incomingCall.userId,
       therapistId: therapist.id,
     });
-
     setIncomingCall(null);
   };
 
   const handleLogout = () => {
-    dispatch(logout());
-    navigation.reset({
-      index: 0,
-      routes: [{ name: "Login" }],
-    });
+    Alert.alert("Logout", "Are you sure you want to logout?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Logout",
+        style: "destructive",
+        onPress: () => {
+          dispatch(logout());
+          navigation.reset({
+            index: 0,
+            routes: [{ name: "Login" }],
+          });
+        },
+      },
+    ]);
   };
+
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    return (
+      date.toLocaleDateString() +
+      " " +
+      date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    );
+  };
+
+  const formatDuration = (minutes) => {
+    const hrs = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+  };
+
+  const StatCard = ({ title, value, subtitle, icon, color }) => (
+    <View style={[styles.statCard, { borderLeftColor: color }]}>
+      <View style={styles.statHeader}>
+        <Text style={styles.statIcon}>{icon}</Text>
+        <Text style={styles.statTitle}>{title}</Text>
+      </View>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statSubtitle}>{subtitle}</Text>
+    </View>
+  );
+
+  const renderCallHistoryItem = ({ item }) => (
+    <View style={styles.historyCard}>
+      <View style={styles.historyHeader}>
+        <View style={styles.historyAvatar}>
+          <Text style={styles.historyAvatarText}>U</Text>
+        </View>
+        <View style={styles.historyInfo}>
+          <Text style={styles.historyUserName}>
+            User ({item.userId?.phoneNumber?.slice(-4) || "Unknown"})
+          </Text>
+          <Text style={styles.historyDate}>{formatDate(item.startTime)}</Text>
+        </View>
+        <View style={styles.historyMeta}>
+          <Text style={styles.historyDuration}>
+            {formatDuration(item.durationMinutes)}
+          </Text>
+          <Text style={styles.historyEarnings}>
+            +{item.therapistEarningsCoins} coins
+          </Text>
+        </View>
+      </View>
+      <View style={styles.historyStatus}>
+        <View
+          style={[
+            styles.statusBadge,
+            { backgroundColor: getStatusColor(item.status) },
+          ]}
+        >
+          <Text style={styles.statusText}>{getStatusText(item.status)}</Text>
+        </View>
+      </View>
+    </View>
+  );
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case "ended_by_user":
+      case "ended_by_therapist":
+        return "#4CAF50";
+      case "missed":
+        return "#f44336";
+      case "rejected":
+        return "#ff9800";
+      default:
+        return "#9e9e9e";
+    }
+  };
+
+  const getStatusText = (status) => {
+    switch (status) {
+      case "ended_by_user":
+      case "ended_by_therapist":
+        return "Completed";
+      case "missed":
+        return "Missed";
+      case "rejected":
+        return "Rejected";
+      default:
+        return "Unknown";
+    }
+  };
+
+  const DashboardContent = () => (
+    <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      {/* Availability Toggle */}
+      <View style={styles.availabilityCard}>
+        <LinearGradient
+          colors={isAvailable ? ["#4CAF50", "#45a049"] : ["#f44336", "#da190b"]}
+          style={styles.availabilityGradient}
+        >
+          <View style={styles.availabilityContent}>
+            <View style={styles.availabilityLeft}>
+              <Text style={styles.availabilityIcon}>
+                {isAvailable ? "🟢" : "🔴"}
+              </Text>
+              <View>
+                <Text style={styles.availabilityTitle}>
+                  {isAvailable ? "Available" : "Unavailable"}
+                </Text>
+                <Text style={styles.availabilitySubtitle}>
+                  {isAvailable
+                    ? "You can receive calls from users"
+                    : "You are not visible to users"}
+                </Text>
+              </View>
+            </View>
+            <Switch
+              value={isAvailable}
+              onValueChange={toggleAvailability}
+              trackColor={{ false: "#767577", true: "rgba(255,255,255,0.3)" }}
+              thumbColor="#fff"
+            />
+          </View>
+        </LinearGradient>
+      </View>
+
+      {/* Today's Stats */}
+      <Text style={styles.sectionTitle}>📊 Today's Performance</Text>
+      <View style={styles.statsRow}>
+        <StatCard
+          title="Calls"
+          value={todayStats.callsToday || 0}
+          subtitle="sessions today"
+          icon="📞"
+          color="#4CAF50"
+        />
+        <StatCard
+          title="Earnings"
+          value={`${todayStats.earningsToday || 0}`}
+          subtitle="coins earned"
+          icon="💰"
+          color="#FF9800"
+        />
+      </View>
+
+      <View style={styles.statsRow}>
+        <StatCard
+          title="Hours"
+          value={formatDuration(todayStats.minutesToday || 0)}
+          subtitle="time spent"
+          icon="⏰"
+          color="#2196F3"
+        />
+        <StatCard
+          title="Total"
+          value={`${therapist?.totalEarningsCoins || 0}`}
+          subtitle="lifetime coins"
+          icon="🏆"
+          color="#9C27B0"
+        />
+      </View>
+
+      {/* Weekly Stats */}
+      <Text style={styles.sectionTitle}>📈 This Week</Text>
+      <View style={styles.weeklyCard}>
+        <View style={styles.weeklyItem}>
+          <Text style={styles.weeklyLabel}>Calls</Text>
+          <Text style={styles.weeklyValue}>{weeklyStats.callsWeek || 0}</Text>
+        </View>
+        <View style={styles.weeklyDivider} />
+        <View style={styles.weeklyItem}>
+          <Text style={styles.weeklyLabel}>Earnings</Text>
+          <Text style={styles.weeklyValue}>
+            {weeklyStats.earningsWeek || 0} coins
+          </Text>
+        </View>
+        <View style={styles.weeklyDivider} />
+        <View style={styles.weeklyItem}>
+          <Text style={styles.weeklyLabel}>Hours</Text>
+          <Text style={styles.weeklyValue}>
+            {formatDuration(weeklyStats.minutesWeek || 0)}
+          </Text>
+        </View>
+      </View>
+    </ScrollView>
+  );
+
+  const CallHistoryContent = () => (
+    <FlatList
+      data={callHistory}
+      renderItem={renderCallHistoryItem}
+      keyExtractor={(item) => item._id}
+      contentContainerStyle={styles.listContainer}
+      showsVerticalScrollIndicator={false}
+      ListEmptyComponent={
+        <View style={styles.emptyContainer}>
+          <Text style={styles.emptyIcon}>📋</Text>
+          <Text style={styles.emptyText}>No call history</Text>
+          <Text style={styles.emptySubtext}>
+            Your completed sessions will appear here
+          </Text>
+        </View>
+      }
+    />
+  );
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.earnings}>
-          Earnings: {therapist?.totalEarningsCoins || 0} coins
-        </Text>
-        <TouchableOpacity onPress={handleLogout}>
-          <Text style={styles.logoutText}>Logout</Text>
+      <StatusBar barStyle="light-content" backgroundColor="#667eea" />
+
+      {/* Header */}
+      <LinearGradient colors={["#667eea", "#764ba2"]} style={styles.header}>
+        <View style={styles.headerContent}>
+          <View style={styles.therapistAvatar}>
+            <Text style={styles.therapistAvatarText}>
+              {therapist?.name?.charAt(0) || "T"}
+            </Text>
+          </View>
+          <View style={styles.headerInfo}>
+            <Text style={styles.welcomeText}>Dr. {therapist?.name}</Text>
+            <View style={styles.earningsContainer}>
+              <Text style={styles.earningsIcon}>💰</Text>
+              <Text style={styles.earningsText}>
+                {therapist?.totalEarningsCoins || 0} coins
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
+            <Text style={styles.logoutIcon}>🚪</Text>
+          </TouchableOpacity>
+        </View>
+      </LinearGradient>
+
+      {/* Tabs */}
+      <View style={styles.tabContainer}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "dashboard" && styles.activeTab]}
+          onPress={() => setActiveTab("dashboard")}
+        >
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "dashboard" && styles.activeTabText,
+            ]}
+          >
+            📊 Dashboard
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "history" && styles.activeTab]}
+          onPress={() => setActiveTab("history")}
+        >
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "history" && styles.activeTabText,
+            ]}
+          >
+            📋 History
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.content}>
-        <View style={styles.availabilityContainer}>
-          <Text style={styles.availabilityText}>
-            Status: {isAvailable ? "Available" : "Unavailable"}
-          </Text>
-          <Switch
-            value={isAvailable}
-            onValueChange={toggleAvailability}
-            trackColor={{ false: "#767577", true: "#81b0ff" }}
-            thumbColor={isAvailable ? "#4A90E2" : "#f4f3f4"}
-          />
-        </View>
+      {/* Content */}
+      {activeTab === "dashboard" ? (
+        <DashboardContent />
+      ) : (
+        <CallHistoryContent />
+      )}
 
-        <Text style={styles.infoText}>
-          {isAvailable
-            ? "You are visible to users and can receive calls"
-            : "You are not visible to users"}
-        </Text>
-
-        <View style={styles.statsContainer}>
-          <Text style={styles.statsTitle}>Today's Stats</Text>
-          <Text style={styles.statsText}>Calls: 0</Text>
-          <Text style={styles.statsText}>Earnings: 0 coins</Text>
-        </View>
-      </View>
-
+      {/* Incoming Call Modal */}
       <Modal
         visible={showCallModal}
         transparent
@@ -150,29 +423,45 @@ export default function TherapistDashboard({ navigation }) {
         onRequestClose={rejectCall}
       >
         <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Incoming Call</Text>
-            <Text style={styles.modalText}>
-              {incomingCall?.userName || "User"} is calling...
-            </Text>
-            <Text style={styles.modalSubtext}>
-              Room: {incomingCall?.roomId}
-            </Text>
-            <View style={styles.modalButtons}>
+          <LinearGradient
+            colors={["#4CAF50", "#45a049"]}
+            style={styles.callModalContent}
+          >
+            <View style={styles.callModalHeader}>
+              <Text style={styles.callModalTitle}>📞 Incoming Call</Text>
+              <Text style={styles.callModalSubtitle}>
+                {incomingCall?.userName || "User"} is calling...
+              </Text>
+            </View>
+
+            <View style={styles.callerInfo}>
+              <View style={styles.callerAvatar}>
+                <Text style={styles.callerAvatarText}>U</Text>
+              </View>
+              <Text style={styles.callerName}>
+                {incomingCall?.userName || "User"}
+              </Text>
+              <Text style={styles.roomInfo}>Room: {incomingCall?.roomId}</Text>
+            </View>
+
+            <View style={styles.callActions}>
               <TouchableOpacity
-                style={[styles.modalButton, styles.rejectButton]}
+                style={styles.rejectButton}
                 onPress={rejectCall}
               >
-                <Text style={styles.modalButtonText}>Reject</Text>
+                <Text style={styles.rejectIcon}>📞</Text>
+                <Text style={styles.rejectText}>Decline</Text>
               </TouchableOpacity>
+
               <TouchableOpacity
-                style={[styles.modalButton, styles.acceptButton]}
+                style={styles.acceptButton}
                 onPress={acceptCall}
               >
-                <Text style={styles.modalButtonText}>Accept</Text>
+                <Text style={styles.acceptIcon}>📞</Text>
+                <Text style={styles.acceptText}>Accept</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </LinearGradient>
         </View>
       </Modal>
     </View>
@@ -182,125 +471,397 @@ export default function TherapistDashboard({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#f8f9fa",
   },
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 15,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#ddd",
+    paddingTop: StatusBar.currentHeight + 10,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
   },
-  earnings: {
+  headerContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  therapistAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  therapistAvatarText: {
+    color: "#fff",
     fontSize: 18,
     fontWeight: "bold",
-    color: "#333",
   },
-  logoutText: {
-    color: "#4A90E2",
+  headerInfo: {
+    flex: 1,
+    marginLeft: 15,
+  },
+  welcomeText: {
+    color: "#fff",
     fontSize: 16,
+    fontWeight: "bold",
+    marginBottom: 4,
+  },
+  earningsContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  earningsIcon: {
+    fontSize: 16,
+    marginRight: 5,
+  },
+  earningsText: {
+    color: "#fff",
+    fontSize: 14,
+  },
+  logoutButton: {
+    padding: 10,
+  },
+  logoutIcon: {
+    fontSize: 20,
+  },
+  tabContainer: {
+    flexDirection: "row",
+    backgroundColor: "#fff",
+    marginHorizontal: 20,
+    marginTop: -10,
+    borderRadius: 15,
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 15,
+    alignItems: "center",
+    borderRadius: 15,
+  },
+  activeTab: {
+    backgroundColor: "#667eea",
+  },
+  tabText: {
+    fontSize: 14,
+    color: "#666",
+    fontWeight: "600",
+  },
+  activeTabText: {
+    color: "#fff",
   },
   content: {
+    flex: 1,
+    marginTop: 20,
+  },
+  availabilityCard: {
+    marginHorizontal: 20,
+    marginBottom: 25,
+    borderRadius: 15,
+    overflow: "hidden",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  availabilityGradient: {
     padding: 20,
   },
-  availabilityContainer: {
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 8,
+  availabilityContent: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 20,
-    elevation: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    justifyContent: "space-between",
   },
-  availabilityText: {
+  availabilityLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  availabilityIcon: {
+    fontSize: 24,
+    marginRight: 15,
+  },
+  availabilityTitle: {
+    color: "#fff",
     fontSize: 18,
-    color: "#333",
+    fontWeight: "bold",
+    marginBottom: 4,
   },
-  infoText: {
-    fontSize: 16,
-    color: "#666",
-    textAlign: "center",
-    marginBottom: 30,
+  availabilitySubtitle: {
+    color: "rgba(255, 255, 255, 0.8)",
+    fontSize: 14,
   },
-  statsContainer: {
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 8,
-    elevation: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  statsTitle: {
+  sectionTitle: {
     fontSize: 18,
     fontWeight: "bold",
     color: "#333",
+    marginHorizontal: 20,
+    marginBottom: 15,
+  },
+  statsRow: {
+    flexDirection: "row",
+    marginHorizontal: 20,
+    marginBottom: 15,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderRadius: 15,
+    padding: 20,
+    marginHorizontal: 5,
+    borderLeftWidth: 4,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+  },
+  statHeader: {
+    flexDirection: "row",
+    alignItems: "center",
     marginBottom: 10,
   },
-  statsText: {
+  statIcon: {
     fontSize: 16,
+    marginRight: 8,
+  },
+  statTitle: {
+    fontSize: 14,
     color: "#666",
+    fontWeight: "500",
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: "bold",
     marginBottom: 5,
+  },
+  statSubtitle: {
+    fontSize: 12,
+    color: "#999",
+  },
+  weeklyCard: {
+    backgroundColor: "#fff",
+    marginHorizontal: 20,
+    borderRadius: 15,
+    padding: 20,
+    flexDirection: "row",
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    marginBottom: 20,
+  },
+  weeklyItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  weeklyLabel: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 8,
+  },
+  weeklyValue: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  weeklyDivider: {
+    width: 1,
+    backgroundColor: "#e9ecef",
+    marginHorizontal: 15,
+  },
+  listContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 20,
+  },
+  historyCard: {
+    backgroundColor: "#fff",
+    borderRadius: 15,
+    padding: 20,
+    marginBottom: 15,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+  },
+  historyHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  historyAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "#667eea",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 15,
+  },
+  historyAvatarText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  historyInfo: {
+    flex: 1,
+  },
+  historyUserName: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 4,
+  },
+  historyDate: {
+    fontSize: 12,
+    color: "#666",
+  },
+  historyMeta: {
+    alignItems: "flex-end",
+  },
+  historyDuration: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 4,
+  },
+  historyEarnings: {
+    fontSize: 12,
+    color: "#4CAF50",
+    fontWeight: "500",
+  },
+  historyStatus: {
+    alignItems: "flex-start",
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  statusText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  emptyContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 60,
+  },
+  emptyIcon: {
+    fontSize: 60,
+    marginBottom: 15,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
   },
   modalContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
   },
-  modalContent: {
-    backgroundColor: "#fff",
+  callModalContent: {
+    width: width * 0.85,
+    borderRadius: 25,
     padding: 30,
-    borderRadius: 10,
-    width: "80%",
-    elevation: 5,
+    alignItems: "center",
   },
-  modalTitle: {
+  callModalHeader: {
+    alignItems: "center",
+    marginBottom: 30,
+  },
+  callModalTitle: {
     fontSize: 24,
     fontWeight: "bold",
-    marginBottom: 10,
-    textAlign: "center",
-    color: "#333",
+    color: "#fff",
+    marginBottom: 8,
   },
-  modalText: {
-    fontSize: 18,
-    marginBottom: 10,
-    textAlign: "center",
-    color: "#666",
+  callModalSubtitle: {
+    fontSize: 16,
+    color: "rgba(255, 255, 255, 0.8)",
   },
-  modalSubtext: {
+  callerInfo: {
+    alignItems: "center",
+    marginBottom: 40,
+  },
+  callerAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  callerAvatarText: {
+    color: "#fff",
+    fontSize: 32,
+    fontWeight: "bold",
+  },
+  callerName: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#fff",
+    marginBottom: 5,
+  },
+  roomInfo: {
     fontSize: 12,
-    marginBottom: 20,
-    textAlign: "center",
-    color: "#999",
+    color: "rgba(255, 255, 255, 0.6)",
   },
-  modalButtons: {
+  callActions: {
     flexDirection: "row",
     justifyContent: "space-around",
-  },
-  modalButton: {
-    padding: 15,
-    borderRadius: 5,
-    minWidth: 100,
-    alignItems: "center",
+    width: "100%",
   },
   rejectButton: {
     backgroundColor: "#f44336",
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    borderRadius: 25,
+    alignItems: "center",
+    minWidth: 100,
   },
   acceptButton: {
-    backgroundColor: "#4CAF50",
+    backgroundColor: "#fff",
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    borderRadius: 25,
+    alignItems: "center",
+    minWidth: 100,
   },
-  modalButtonText: {
+  rejectIcon: {
+    fontSize: 20,
+    marginBottom: 5,
+    transform: [{ rotate: "135deg" }],
+  },
+  acceptIcon: {
+    fontSize: 20,
+    marginBottom: 5,
+  },
+  rejectText: {
     color: "#fff",
     fontWeight: "bold",
-    fontSize: 16,
+    fontSize: 14,
+  },
+  acceptText: {
+    color: "#4CAF50",
+    fontWeight: "bold",
+    fontSize: 14,
   },
 });

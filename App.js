@@ -135,8 +135,8 @@ function AppContent() {
           name="UserDashboard"
           component={UserDashboard}
           options={{
-            title: "Available Therapists",
-            headerLeft: null,
+            title: "TherapyConnect",
+            headerShown: false,
           }}
         />
         <Stack.Screen
@@ -144,7 +144,7 @@ function AppContent() {
           component={TherapistDashboard}
           options={{
             title: "Therapist Dashboard",
-            headerLeft: null,
+            headerShown: false,
           }}
         />
         <Stack.Screen

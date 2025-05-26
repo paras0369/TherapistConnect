@@ -31,6 +31,29 @@ export const therapistLogin = createAsyncThunk(
   }
 );
 
+export const adminLogin = createAsyncThunk(
+  "auth/adminLogin",
+  async ({ email, password }) => {
+    // For admin login, we'll use a special endpoint or validate against admin credentials
+    // This is a simple implementation - you should enhance this for production
+    if (email === "admin@therapyconnect.com" && password === "admin123") {
+      const adminToken = "admin-token-" + Date.now();
+      await AsyncStorage.setItem("token", adminToken);
+      await AsyncStorage.setItem("userType", "admin");
+      return {
+        token: adminToken,
+        admin: {
+          id: "admin",
+          email: email,
+          role: "super_admin",
+        },
+      };
+    } else {
+      throw new Error("Invalid admin credentials");
+    }
+  }
+);
+
 const authSlice = createSlice({
   name: "auth",
   initialState: {
@@ -55,13 +78,32 @@ const authSlice = createSlice({
       state.userType = action.payload.userType;
       if (action.payload.userType === "user") {
         state.user = action.payload.user;
-      } else {
+      } else if (action.payload.userType === "therapist") {
         state.therapist = action.payload.therapist;
+      }
+    },
+    clearError: (state) => {
+      state.error = null;
+    },
+    updateUserBalance: (state, action) => {
+      if (state.user) {
+        state.user.coinBalance = action.payload;
+      }
+    },
+    updateTherapistEarnings: (state, action) => {
+      if (state.therapist) {
+        state.therapist.totalEarningsCoins = action.payload;
+      }
+    },
+    updateTherapistAvailability: (state, action) => {
+      if (state.therapist) {
+        state.therapist.isAvailable = action.payload;
       }
     },
   },
   extraReducers: (builder) => {
     builder
+      // Send OTP
       .addCase(sendOTP.pending, (state) => {
         state.loading = true;
         state.error = null;
@@ -73,20 +115,46 @@ const authSlice = createSlice({
         state.loading = false;
         state.error = action.error.message;
       })
+      // Verify OTP
+      .addCase(verifyOTP.pending, (state) => {
+        state.loading = true;
+        state.error = null;
+      })
       .addCase(verifyOTP.fulfilled, (state, action) => {
         state.loading = false;
         state.token = action.payload.token;
         state.user = action.payload.user;
         state.userType = "user";
       })
+      .addCase(verifyOTP.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.error.message;
+      })
+      // Therapist Login
+      .addCase(therapistLogin.pending, (state) => {
+        state.loading = true;
+        state.error = null;
+      })
       .addCase(therapistLogin.fulfilled, (state, action) => {
         state.loading = false;
         state.token = action.payload.token;
         state.therapist = action.payload.therapist;
         state.userType = "therapist";
+      })
+      .addCase(therapistLogin.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.error.message;
       });
   },
 });
 
-export const { logout, setAuth } = authSlice.actions;
+export const {
+  logout,
+  setAuth,
+  clearError,
+  updateUserBalance,
+  updateTherapistEarnings,
+  updateTherapistAvailability,
+} = authSlice.actions;
+
 export default authSlice.reducer;

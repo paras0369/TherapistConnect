@@ -33,14 +33,10 @@ export default function CallScreen({ route, navigation }) {
   const callTimer = useRef(null);
   const hasSetRemoteDescription = useRef(false);
   const pendingCandidates = useRef([]);
+  const isSetupComplete = useRef(false);
 
   useEffect(() => {
     console.log("CallScreen mounted with params:", { roomId, isInitiator });
-    console.log("=== CallScreen Debug ===");
-    console.log("Route params:", route.params);
-    console.log("roomId:", roomId);
-    console.log("isInitiator:", isInitiator);
-    console.log("========================");
     setupCall();
 
     return () => {
@@ -69,6 +65,10 @@ export default function CallScreen({ route, navigation }) {
     try {
       console.log("Setting up call...");
       setConnectionState("Setting up call...");
+
+      // Join the room first
+      console.log("Joining room:", roomId);
+      socketService.emit("join-room", roomId);
 
       // Configure InCallManager for audio routing
       InCallManager.start({ media: "audio", ringback: false });
@@ -143,6 +143,14 @@ export default function CallScreen({ route, navigation }) {
       peerConnection.current.oniceconnectionstatechange = () => {
         const iceState = peerConnection.current.iceConnectionState;
         console.log("ICE connection state:", iceState);
+
+        if (iceState === "connected" || iceState === "completed") {
+          setIsConnected(true);
+          setConnectionState("Connected");
+        } else if (iceState === "failed") {
+          console.error("ICE connection failed");
+          Alert.alert("Connection Error", "Failed to establish connection");
+        }
       };
 
       // Handle ICE gathering state
@@ -169,18 +177,19 @@ export default function CallScreen({ route, navigation }) {
       // Set up socket listeners
       setupSocketListeners();
 
+      isSetupComplete.current = true;
+
       // Start the signaling process
       if (isInitiator) {
-        console.log("User is initiator, will create offer after setup");
-        setConnectionState("Preparing to create offer...");
-        // Create offer after a small delay to ensure everything is ready
+        console.log("User is initiator, creating offer...");
+        setConnectionState("Creating offer...");
+        // Small delay to ensure setup is complete
         setTimeout(() => {
-          console.log("Now creating offer...");
           createOffer();
-        }, 2000);
+        }, 1000);
       } else {
         console.log("Therapist waiting for offer...");
-        setConnectionState("Waiting for call...");
+        setConnectionState("Waiting for offer...");
       }
     } catch (error) {
       console.error("Error setting up call:", error);
@@ -190,7 +199,7 @@ export default function CallScreen({ route, navigation }) {
   };
 
   const setupSocketListeners = () => {
-    console.log("Setting up socket listeners");
+    console.log("Setting up socket listeners for room:", roomId);
 
     // Remove any existing listeners first
     socketService.off("ice-candidate");
@@ -199,11 +208,18 @@ export default function CallScreen({ route, navigation }) {
     socketService.off("call-ended");
 
     socketService.on("ice-candidate", async (data) => {
-      console.log("Received ICE candidate");
+      console.log("Received ICE candidate for room:", data.roomId);
+
+      // Only process if it's for our room
+      if (data.roomId !== roomId) {
+        console.log("ICE candidate not for our room, ignoring");
+        return;
+      }
+
       try {
         const candidate = new RTCIceCandidate(data.candidate);
 
-        if (hasSetRemoteDescription.current) {
+        if (hasSetRemoteDescription.current && peerConnection.current) {
           await peerConnection.current.addIceCandidate(candidate);
           console.log("Added ICE candidate");
         } else {
@@ -216,8 +232,20 @@ export default function CallScreen({ route, navigation }) {
     });
 
     socketService.on("offer", async (data) => {
-      console.log("Received offer");
+      console.log("Received offer for room:", data.roomId);
+
+      // Only process if it's for our room
+      if (data.roomId !== roomId) {
+        console.log("Offer not for our room, ignoring");
+        return;
+      }
+
       try {
+        if (!peerConnection.current) {
+          console.error("No peer connection available");
+          return;
+        }
+
         await peerConnection.current.setRemoteDescription(
           new RTCSessionDescription(data.offer)
         );
@@ -245,8 +273,20 @@ export default function CallScreen({ route, navigation }) {
     });
 
     socketService.on("answer", async (data) => {
-      console.log("Received answer");
+      console.log("Received answer for room:", data.roomId);
+
+      // Only process if it's for our room
+      if (data.roomId !== roomId) {
+        console.log("Answer not for our room, ignoring");
+        return;
+      }
+
       try {
+        if (!peerConnection.current) {
+          console.error("No peer connection available");
+          return;
+        }
+
         await peerConnection.current.setRemoteDescription(
           new RTCSessionDescription(data.answer)
         );
@@ -275,6 +315,12 @@ export default function CallScreen({ route, navigation }) {
 
   const createOffer = async () => {
     try {
+      if (!peerConnection.current || !isSetupComplete.current) {
+        console.log("Peer connection not ready, retrying...");
+        setTimeout(createOffer, 500);
+        return;
+      }
+
       console.log("Creating offer...");
       const offer = await peerConnection.current.createOffer({
         offerToReceiveAudio: true,
@@ -314,6 +360,9 @@ export default function CallScreen({ route, navigation }) {
   const cleanup = () => {
     try {
       console.log("Cleaning up call resources...");
+
+      // Leave the room
+      socketService.emit("leave-room", roomId);
 
       // Stop local stream
       if (localStream) {
@@ -392,6 +441,7 @@ export default function CallScreen({ route, navigation }) {
         <Text style={styles.debugText}>
           Role: {isInitiator ? "User (Initiator)" : "Therapist (Receiver)"}
         </Text>
+
         <Text style={styles.debugText}>Room: {roomId}</Text>
       </View>
 
