@@ -1,5 +1,5 @@
 // src/screens/TherapistDashboard.js
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -12,9 +12,15 @@ import {
   FlatList,
   ScrollView,
   Dimensions,
+  RefreshControl,
 } from "react-native";
 import { useSelector, useDispatch } from "react-redux";
-import { logout } from "../store/authSlice";
+import { useFocusEffect } from "@react-navigation/native";
+import {
+  logout,
+  updateTherapistEarnings,
+  updateTherapistAvailability,
+} from "../store/authSlice";
 import api from "../services/api";
 import socketService from "../services/socket";
 import LinearGradient from "react-native-linear-gradient";
@@ -27,6 +33,7 @@ export default function TherapistDashboard({ navigation }) {
   const [showCallModal, setShowCallModal] = useState(false);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [callHistory, setCallHistory] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
   const [todayStats, setTodayStats] = useState({
     callsToday: 0,
     earningsToday: 0,
@@ -40,11 +47,18 @@ export default function TherapistDashboard({ navigation }) {
   const { therapist } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
 
+  // Refresh data when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      console.log("Therapist dashboard focused, refreshing data...");
+      fetchAllData();
+    }, [])
+  );
+
   useEffect(() => {
     if (therapist) {
       setIsAvailable(therapist.isAvailable);
-      fetchCallHistory();
-      fetchStats();
+      fetchAllData();
 
       // Connect socket
       const socket = socketService.connect();
@@ -56,14 +70,37 @@ export default function TherapistDashboard({ navigation }) {
         setShowCallModal(true);
       });
 
+      // Auto-refresh stats every 60 seconds when on dashboard tab
+      const autoRefreshInterval = setInterval(() => {
+        if (activeTab === "dashboard") {
+          fetchStats(false); // Silent refresh
+        }
+      }, 60000);
+
       return () => {
         socketService.off("incoming-call");
         socketService.disconnect();
+        clearInterval(autoRefreshInterval);
       };
     }
   }, [therapist]);
 
-  const fetchCallHistory = async () => {
+  const fetchAllData = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        fetchCallHistory(false),
+        fetchStats(false),
+        fetchTherapistProfile(),
+      ]);
+    } catch (error) {
+      console.error("Error refreshing data:", error);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const fetchCallHistory = async (showLoading = true) => {
     try {
       const response = await api.get("/therapist/call-history");
       setCallHistory(response.data.calls || []);
@@ -72,7 +109,7 @@ export default function TherapistDashboard({ navigation }) {
     }
   };
 
-  const fetchStats = async () => {
+  const fetchStats = async (showLoading = true) => {
     try {
       const response = await api.get("/therapist/stats");
       setTodayStats(response.data.today || {});
@@ -82,14 +119,43 @@ export default function TherapistDashboard({ navigation }) {
     }
   };
 
+  const fetchTherapistProfile = async () => {
+    try {
+      const response = await api.get("/therapist/profile");
+      const updatedTherapist = response.data.therapist;
+      // Update therapist data in Redux store
+      dispatch(updateTherapistEarnings(updatedTherapist.totalEarningsCoins));
+      dispatch(updateTherapistAvailability(updatedTherapist.isAvailable));
+      setIsAvailable(updatedTherapist.isAvailable);
+    } catch (error) {
+      console.error("Error fetching therapist profile:", error);
+    }
+  };
+
   const toggleAvailability = async () => {
     try {
       const response = await api.put("/therapist/availability", {
         isAvailable: !isAvailable,
       });
       setIsAvailable(response.data.therapist.isAvailable);
+      dispatch(
+        updateTherapistAvailability(response.data.therapist.isAvailable)
+      );
     } catch (error) {
       Alert.alert("Error", "Failed to update availability");
+    }
+  };
+
+  const onRefresh = useCallback(() => {
+    fetchAllData();
+  }, []);
+
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    if (tab === "history") {
+      fetchCallHistory(false); // Refresh call history when tab is selected
+    } else if (tab === "dashboard") {
+      fetchStats(false); // Refresh stats when dashboard tab is selected
     }
   };
 
@@ -238,7 +304,18 @@ export default function TherapistDashboard({ navigation }) {
   };
 
   const DashboardContent = () => (
-    <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          colors={["#667eea"]}
+          tintColor={"#667eea"}
+        />
+      }
+    >
       {/* Availability Toggle */}
       <View style={styles.availabilityCard}>
         <LinearGradient
@@ -339,6 +416,14 @@ export default function TherapistDashboard({ navigation }) {
       keyExtractor={(item) => item._id}
       contentContainerStyle={styles.listContainer}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          colors={["#667eea"]}
+          tintColor={"#667eea"}
+        />
+      }
       ListEmptyComponent={
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>📋</Text>
@@ -382,7 +467,7 @@ export default function TherapistDashboard({ navigation }) {
       <View style={styles.tabContainer}>
         <TouchableOpacity
           style={[styles.tab, activeTab === "dashboard" && styles.activeTab]}
-          onPress={() => setActiveTab("dashboard")}
+          onPress={() => handleTabChange("dashboard")}
         >
           <Text
             style={[
@@ -395,7 +480,7 @@ export default function TherapistDashboard({ navigation }) {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === "history" && styles.activeTab]}
-          onPress={() => setActiveTab("history")}
+          onPress={() => handleTabChange("history")}
         >
           <Text
             style={[
