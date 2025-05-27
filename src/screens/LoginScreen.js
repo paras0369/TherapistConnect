@@ -1,5 +1,4 @@
-// src/screens/LoginScreen.js
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -13,14 +12,30 @@ import {
 } from "react-native";
 import { useDispatch, useSelector } from "react-redux";
 import { sendOTP } from "../store/authSlice";
+import { FirebaseService } from "../services/firebase";
 import LinearGradient from "react-native-linear-gradient";
 
 const { width, height } = Dimensions.get("window");
 
 export default function LoginScreen({ navigation }) {
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [fcmToken, setFcmToken] = useState(null);
   const dispatch = useDispatch();
   const { loading } = useSelector((state) => state.auth);
+
+  useEffect(() => {
+    initializeFirebase();
+  }, []);
+
+  const initializeFirebase = async () => {
+    try {
+      const token = await FirebaseService.getFCMToken();
+      setFcmToken(token);
+      console.log("FCM Token obtained:", token);
+    } catch (error) {
+      console.error("Error initializing Firebase:", error);
+    }
+  };
 
   const handleSendOTP = async () => {
     if (!phoneNumber || phoneNumber.length < 10) {
@@ -30,7 +45,7 @@ export default function LoginScreen({ navigation }) {
 
     try {
       await dispatch(sendOTP(phoneNumber)).unwrap();
-      navigation.navigate("OTP", { phoneNumber });
+      navigation.navigate("OTP", { phoneNumber, fcmToken });
     } catch (error) {
       Alert.alert("Error", "Failed to send OTP. Please try again.");
     }
@@ -121,6 +136,7 @@ export default function LoginScreen({ navigation }) {
   );
 }
 
+// Styles remain the same...
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -264,7 +280,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
-
   footer: {
     paddingHorizontal: 30,
     paddingBottom: 30,

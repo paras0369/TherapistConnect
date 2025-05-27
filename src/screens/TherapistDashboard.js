@@ -23,6 +23,7 @@ import {
 } from "../store/authSlice";
 import api from "../services/api";
 import socketService from "../services/socket";
+import { FirebaseService } from "../services/firebase";
 import LinearGradient from "react-native-linear-gradient";
 
 const { width } = Dimensions.get("window");
@@ -47,6 +48,53 @@ export default function TherapistDashboard({ navigation }) {
   const { therapist } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
 
+  // Initialize Firebase and notification listeners
+  useEffect(() => {
+    if (therapist) {
+      initializeFirebaseForTherapist();
+    }
+  }, [therapist]);
+
+  const initializeFirebaseForTherapist = async () => {
+    try {
+      // Get FCM token and update on server
+      const fcmToken = await FirebaseService.getFCMToken();
+      if (fcmToken) {
+        await api.post("/auth/update-fcm-token", {
+          fcmToken,
+          userType: "therapist",
+          userId: therapist.id,
+        });
+        console.log("Therapist FCM token updated");
+      }
+
+      // Setup notification listeners for calls
+      FirebaseService.setupNotificationListeners(
+        handleFirebaseCallNotification
+      );
+
+      // Subscribe to therapist-specific topic
+      await FirebaseService.subscribeToTopic(`therapist_${therapist.id}`);
+    } catch (error) {
+      console.error("Firebase initialization error for therapist:", error);
+    }
+  };
+
+  const handleFirebaseCallNotification = (notificationData) => {
+    console.log("Firebase call notification received:", notificationData);
+
+    if (notificationData.type === "incoming_call") {
+      // Show incoming call modal
+      setIncomingCall({
+        userId: notificationData.userId,
+        userName: notificationData.userName,
+        roomId: notificationData.roomId,
+        callId: notificationData.callId,
+      });
+      setShowCallModal(true);
+    }
+  };
+
   // Refresh data when screen comes into focus
   useFocusEffect(
     useCallback(() => {
@@ -64,8 +112,9 @@ export default function TherapistDashboard({ navigation }) {
       const socket = socketService.connect();
       socketService.emit("therapist-connect", therapist.id);
 
-      // Listen for incoming calls
+      // Listen for incoming calls (backup to Firebase)
       socketService.on("incoming-call", (data) => {
+        console.log("Socket incoming call received:", data);
         setIncomingCall(data);
         setShowCallModal(true);
       });
@@ -153,17 +202,25 @@ export default function TherapistDashboard({ navigation }) {
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     if (tab === "history") {
-      fetchCallHistory(false); // Refresh call history when tab is selected
+      fetchCallHistory(false);
     } else if (tab === "dashboard") {
-      fetchStats(false); // Refresh stats when dashboard tab is selected
+      fetchStats(false);
     }
   };
 
   const acceptCall = async () => {
     setShowCallModal(false);
     try {
-      const callId = incomingCall.roomId.split("-")[1];
-      await api.post(`/call/answer/${callId}`);
+      let callId = incomingCall.callId;
+
+      // If callId is not provided, extract from roomId
+      if (!callId && incomingCall.roomId) {
+        callId = incomingCall.roomId.split("-")[1];
+      }
+
+      if (callId) {
+        await api.post(`/call/answer/${callId}`);
+      }
 
       console.log(
         "Call answered on server, joining room:",
@@ -185,6 +242,7 @@ export default function TherapistDashboard({ navigation }) {
         isInitiator: false,
       });
     } catch (error) {
+      console.error("Error accepting call:", error);
       Alert.alert("Error", "Failed to accept call");
     }
   };
@@ -198,13 +256,22 @@ export default function TherapistDashboard({ navigation }) {
     setIncomingCall(null);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     Alert.alert("Logout", "Are you sure you want to logout?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Logout",
         style: "destructive",
-        onPress: () => {
+        onPress: async () => {
+          try {
+            // Unsubscribe from Firebase topics
+            await FirebaseService.unsubscribeFromTopic(
+              `therapist_${therapist.id}`
+            );
+          } catch (error) {
+            console.error("Error unsubscribing from Firebase topics:", error);
+          }
+
           dispatch(logout());
           navigation.reset({
             index: 0,

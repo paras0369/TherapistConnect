@@ -1,4 +1,5 @@
 // src/screens/OTPScreen.js
+// Updated src/screens/OTPScreen.js - Send FCM token with verification
 import React, { useState, useRef, useEffect } from "react";
 import {
   View,
@@ -19,7 +20,7 @@ import LinearGradient from "react-native-linear-gradient";
 const { width } = Dimensions.get("window");
 
 export default function OTPScreen({ route, navigation }) {
-  const { phoneNumber } = route.params;
+  const { phoneNumber, fcmToken } = route.params;
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const [timer, setTimer] = useState(30);
   const [canResend, setCanResend] = useState(false);
@@ -123,7 +124,13 @@ export default function OTPScreen({ route, navigation }) {
     }
 
     try {
-      await dispatch(verifyOTP({ phoneNumber, otp: otpString })).unwrap();
+      await dispatch(
+        verifyOTP({
+          phoneNumber,
+          otp: otpString,
+          fcmToken,
+        })
+      ).unwrap();
       navigation.reset({
         index: 0,
         routes: [{ name: "UserDashboard" }],
@@ -179,6 +186,7 @@ export default function OTPScreen({ route, navigation }) {
 
   const isOtpComplete = otp.every((digit) => digit !== "");
 
+  // Rest of the component remains the same with existing styles...
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#667eea" />
@@ -224,7 +232,7 @@ export default function OTPScreen({ route, navigation }) {
                     }
                   }}
                   keyboardType="numeric"
-                  maxLength={index === 0 ? 6 : 1} // Allow paste on first input
+                  maxLength={index === 0 ? 6 : 1}
                   selectTextOnFocus
                   textAlign="center"
                 />

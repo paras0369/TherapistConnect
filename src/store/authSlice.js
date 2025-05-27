@@ -1,4 +1,4 @@
-// src/store/authSlice.js
+// Updated src/store/authSlice.js - Add FCM token support
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import api from "../services/api";
@@ -10,8 +10,12 @@ export const sendOTP = createAsyncThunk("auth/sendOTP", async (phoneNumber) => {
 
 export const verifyOTP = createAsyncThunk(
   "auth/verifyOTP",
-  async ({ phoneNumber, otp }) => {
-    const response = await api.post("/auth/verify-otp", { phoneNumber, otp });
+  async ({ phoneNumber, otp, fcmToken }) => {
+    const response = await api.post("/auth/verify-otp", {
+      phoneNumber,
+      otp,
+      fcmToken,
+    });
     await AsyncStorage.setItem("token", response.data.token);
     await AsyncStorage.setItem("userType", "user");
     return response.data;
@@ -20,10 +24,11 @@ export const verifyOTP = createAsyncThunk(
 
 export const therapistLogin = createAsyncThunk(
   "auth/therapistLogin",
-  async ({ email, password }) => {
+  async ({ email, password, fcmToken }) => {
     const response = await api.post("/auth/therapist-login", {
       email,
       password,
+      fcmToken,
     });
     await AsyncStorage.setItem("token", response.data.token);
     await AsyncStorage.setItem("userType", "therapist");
@@ -54,6 +59,18 @@ export const adminLogin = createAsyncThunk(
   }
 );
 
+export const updateFCMToken = createAsyncThunk(
+  "auth/updateFCMToken",
+  async ({ fcmToken, userType, userId }) => {
+    const response = await api.post("/auth/update-fcm-token", {
+      fcmToken,
+      userType,
+      userId,
+    });
+    return response.data;
+  }
+);
+
 const authSlice = createSlice({
   name: "auth",
   initialState: {
@@ -61,6 +78,7 @@ const authSlice = createSlice({
     therapist: null,
     userType: null,
     token: null,
+    fcmToken: null,
     loading: false,
     error: null,
   },
@@ -70,6 +88,7 @@ const authSlice = createSlice({
       state.therapist = null;
       state.userType = null;
       state.token = null;
+      state.fcmToken = null;
       AsyncStorage.removeItem("token");
       AsyncStorage.removeItem("userType");
     },
@@ -81,6 +100,9 @@ const authSlice = createSlice({
       } else if (action.payload.userType === "therapist") {
         state.therapist = action.payload.therapist;
       }
+    },
+    setFCMToken: (state, action) => {
+      state.fcmToken = action.payload;
     },
     clearError: (state) => {
       state.error = null;
@@ -144,6 +166,17 @@ const authSlice = createSlice({
       .addCase(therapistLogin.rejected, (state, action) => {
         state.loading = false;
         state.error = action.error.message;
+      })
+      // Update FCM Token
+      .addCase(updateFCMToken.pending, (state) => {
+        // Don't show loading for FCM token updates
+      })
+      .addCase(updateFCMToken.fulfilled, (state, action) => {
+        // FCM token updated successfully
+        console.log("FCM token updated on server");
+      })
+      .addCase(updateFCMToken.rejected, (state, action) => {
+        console.error("Failed to update FCM token:", action.error.message);
       });
   },
 });
@@ -151,6 +184,7 @@ const authSlice = createSlice({
 export const {
   logout,
   setAuth,
+  setFCMToken,
   clearError,
   updateUserBalance,
   updateTherapistEarnings,

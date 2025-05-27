@@ -1,4 +1,4 @@
-// src/screens/UserDashboard.js
+// Enhanced src/screens/UserDashboard.js - Real-time balance and stats updates
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
@@ -33,19 +33,38 @@ export default function UserDashboard({ navigation }) {
   const [callHistory, setCallHistory] = useState([]);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState(Date.now());
+  const [callTimeout, setCallTimeout] = useState(null);
+  const [userStats, setUserStats] = useState({
+    totalCalls: 0,
+    totalSpent: 0,
+    totalMinutes: 0,
+  });
   const { user } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
+
+  // Refresh data when screen comes into focus
   useFocusEffect(
     useCallback(() => {
-      console.log("Therapist dashboard focused, refreshing data...");
+      console.log("User dashboard focused, refreshing data...");
       fetchAllData();
     }, [])
   );
 
+  // Auto-refresh balance every 30 seconds when on dashboard
+  useEffect(() => {
+    const balanceRefreshInterval = setInterval(() => {
+      if (activeTab === "therapists") {
+        fetchUserBalance();
+      }
+    }, 30000);
+
+    return () => clearInterval(balanceRefreshInterval);
+  }, [activeTab]);
+
   useEffect(() => {
     fetchTherapists();
     fetchCallHistory();
+    fetchUserStats();
 
     // Connect socket
     const socket = socketService.connect();
@@ -53,7 +72,15 @@ export default function UserDashboard({ navigation }) {
 
     // Listen for call events
     socketService.on("call-accepted", (data) => {
+      console.log("Call accepted by therapist:", data);
       setCalling(false);
+      setShowCallModal(false);
+      setCurrentCall(null);
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+        setCallTimeout(null);
+      }
+
       navigation.navigate("Call", {
         roomId: data.roomId,
         therapistId: data.therapistId,
@@ -61,15 +88,36 @@ export default function UserDashboard({ navigation }) {
       });
     });
 
-    socketService.on("call-rejected", () => {
+    socketService.on("call-rejected", (data) => {
+      console.log("Call rejected by therapist:", data);
       setCalling(false);
-      Alert.alert("Call Rejected", "The therapist is not available");
+      setShowCallModal(false);
+      setCurrentCall(null);
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+        setCallTimeout(null);
+      }
+      Alert.alert("Call Rejected", "The therapist is not available right now");
+    });
+
+    // Listen for call end to refresh balance
+    socketService.on("call-ended", () => {
+      console.log("Call ended, refreshing balance...");
+      setTimeout(() => {
+        fetchUserBalance();
+        fetchCallHistory();
+        fetchUserStats();
+      }, 1000);
     });
 
     return () => {
       socketService.off("call-accepted");
       socketService.off("call-rejected");
+      socketService.off("call-ended");
       socketService.disconnect();
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+      }
     };
   }, []);
 
@@ -80,8 +128,8 @@ export default function UserDashboard({ navigation }) {
         fetchTherapists(false),
         fetchCallHistory(false),
         fetchUserProfile(),
+        fetchUserStats(),
       ]);
-      setLastRefresh(Date.now());
     } catch (error) {
       console.error("Error refreshing data:", error);
     } finally {
@@ -116,31 +164,80 @@ export default function UserDashboard({ navigation }) {
     try {
       const response = await api.get("/user/profile");
       const updatedUser = response.data.user;
-      // Update user balance in Redux store
       dispatch(updateUserBalance(updatedUser.coinBalance));
+
+      // Update user stats from profile
+      setUserStats({
+        totalCalls: updatedUser.totalCalls || 0,
+        totalSpent: updatedUser.totalSpent || 0,
+        totalMinutes: 0, // Will be updated by fetchUserStats
+      });
     } catch (error) {
       console.error("Error fetching user profile:", error);
+    }
+  };
+
+  const fetchUserBalance = async () => {
+    try {
+      const response = await api.get("/user/balance");
+      if (response.data.success) {
+        dispatch(updateUserBalance(response.data.coinBalance));
+        console.log("Balance updated:", response.data.coinBalance);
+      }
+    } catch (error) {
+      console.error("Error fetching user balance:", error);
+    }
+  };
+
+  const fetchUserStats = async () => {
+    try {
+      const response = await api.get("/user/stats");
+      setUserStats({
+        totalCalls: response.data.totalCalls || 0,
+        totalSpent: response.data.totalCoinsSpent || 0,
+        totalMinutes: response.data.totalMinutes || 0,
+        currentBalance: response.data.currentBalance || 0,
+      });
+
+      // Also update balance in Redux if different
+      if (response.data.currentBalance !== user.coinBalance) {
+        dispatch(updateUserBalance(response.data.currentBalance));
+      }
+    } catch (error) {
+      console.error("Error fetching user stats:", error);
     }
   };
 
   const initiateCall = async (therapist) => {
     if (calling) return;
 
+    // Check balance before call
+    await fetchUserBalance();
+
     if (user.coinBalance < 5) {
       Alert.alert(
         "Insufficient Balance",
-        "You need at least 5 coins to make a call"
+        "You need at least 5 coins to make a call. Each minute costs 5 coins."
       );
       return;
     }
 
     try {
       setCalling(true);
+      setCurrentCall({ therapist, roomId: null });
+
       const response = await api.post("/call/initiate", {
         therapistId: therapist._id,
       });
 
       console.log("Call initiated, room ID:", response.data.roomId);
+
+      setCurrentCall({
+        therapist,
+        roomId: response.data.roomId,
+        callId: response.data.callId,
+      });
+      setShowCallModal(true);
 
       // Join the room first
       socketService.emit("join-room", response.data.roomId);
@@ -151,18 +248,49 @@ export default function UserDashboard({ navigation }) {
         userId: user.id,
         userName: user.name || "User",
         roomId: response.data.roomId,
+        callId: response.data.callId,
       });
 
-      Alert.alert("Calling...", "Waiting for therapist to accept", [
-        {
-          text: "Cancel",
-          onPress: () => setCalling(false),
-        },
-      ]);
+      // Set timeout for call (30 seconds)
+      const timeout = setTimeout(() => {
+        console.log("Call timeout - no response from therapist");
+        setCalling(false);
+        setShowCallModal(false);
+        setCurrentCall(null);
+        Alert.alert(
+          "Call Timeout",
+          "The therapist didn't respond. Please try again later."
+        );
+      }, 30000);
+
+      setCallTimeout(timeout);
     } catch (error) {
+      console.error("Call initiation error:", error);
       setCalling(false);
-      Alert.alert("Error", "Failed to initiate call");
+      setCurrentCall(null);
+      setShowCallModal(false);
+      Alert.alert("Error", "Failed to initiate call. Please try again.");
     }
+  };
+
+  const cancelCall = () => {
+    console.log("User cancelled call");
+    setCalling(false);
+    setShowCallModal(false);
+
+    if (callTimeout) {
+      clearTimeout(callTimeout);
+      setCallTimeout(null);
+    }
+
+    if (currentCall && currentCall.roomId) {
+      socketService.emit("cancel-call", {
+        roomId: currentCall.roomId,
+        therapistId: currentCall.therapist._id,
+      });
+    }
+
+    setCurrentCall(null);
   };
 
   const onRefresh = useCallback(() => {
@@ -172,9 +300,10 @@ export default function UserDashboard({ navigation }) {
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     if (tab === "history") {
-      fetchCallHistory(false); // Refresh call history when tab is selected
+      fetchCallHistory(false);
     } else if (tab === "therapists") {
-      fetchTherapists(false); // Refresh therapists when tab is selected
+      fetchTherapists(false);
+      fetchUserBalance(); // Refresh balance when switching to therapists tab
     }
   };
 
@@ -224,12 +353,20 @@ export default function UserDashboard({ navigation }) {
         <Text style={styles.therapistMeta}>💰 5 coins/min</Text>
       </View>
       <TouchableOpacity
-        style={[styles.callButton, calling && styles.disabledButton]}
+        style={[
+          styles.callButton,
+          (calling || !user.coinBalance || user.coinBalance < 5) &&
+            styles.disabledButton,
+        ]}
         onPress={() => initiateCall(item)}
-        disabled={calling}
+        disabled={calling || !user.coinBalance || user.coinBalance < 5}
       >
         <LinearGradient
-          colors={calling ? ["#ccc", "#ccc"] : ["#4CAF50", "#45a049"]}
+          colors={
+            calling || !user.coinBalance || user.coinBalance < 5
+              ? ["#ccc", "#ccc"]
+              : ["#4CAF50", "#45a049"]
+          }
           style={styles.callButtonGradient}
         >
           {calling ? (
@@ -308,83 +445,54 @@ export default function UserDashboard({ navigation }) {
     }
   };
 
-  const cancelCall = () => {
-    setCalling(false);
-    setShowCallModal(false);
-    if (currentCall) {
-      socketService.emit("cancel-call", {
-        roomId: currentCall.roomId,
-        therapistId: currentCall.therapist._id,
-      });
-    }
-    setCurrentCall(null);
-  };
+  const CallingModal = () => (
+    <Modal
+      visible={showCallModal}
+      transparent
+      animationType="fade"
+      onRequestClose={cancelCall}
+    >
+      <View style={styles.callingModalContainer}>
+        <LinearGradient
+          colors={["rgba(102, 126, 234, 0.95)", "rgba(118, 75, 162, 0.95)"]}
+          style={styles.callingModalContent}
+        >
+          <View style={styles.callingHeader}>
+            <Text style={styles.callingTitle}>Calling...</Text>
+            <Text style={styles.callingSubtitle}>
+              Connecting you with your therapist
+            </Text>
+          </View>
 
-  const CallingModal = () => {
-    const [dots, setDots] = useState("");
+          <View style={styles.therapistInfoModal}>
+            <View style={styles.therapistAvatarLarge}>
+              <Text style={styles.therapistAvatarTextLarge}>
+                {currentCall?.therapist?.name?.charAt(0) || "T"}
+              </Text>
+            </View>
+            <Text style={styles.therapistNameLarge}>
+              {currentCall?.therapist?.name || "Therapist"}
+            </Text>
+            <Text style={styles.callingStatus}>Waiting for response...</Text>
 
-    useEffect(() => {
-      if (showCallModal) {
-        const interval = setInterval(() => {
-          setDots((prev) => (prev.length >= 3 ? "" : prev + "."));
-        }, 500);
-        return () => clearInterval(interval);
-      }
-    }, [showCallModal]);
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#fff" />
+            </View>
+          </View>
 
-    if (!currentCall) return null;
-
-    return (
-      <Modal
-        visible={showCallModal}
-        transparent
-        animationType="fade"
-        onRequestClose={cancelCall}
-      >
-        <View style={styles.callingModalContainer}>
-          <LinearGradient
-            colors={["rgba(102, 126, 234, 0.95)", "rgba(118, 75, 162, 0.95)"]}
-            style={styles.callingModalContent}
+          <TouchableOpacity
+            style={styles.cancelCallButton}
+            onPress={cancelCall}
           >
-            <View style={styles.callingHeader}>
-              <Text style={styles.callingTitle}>Calling{dots}</Text>
-              <Text style={styles.callingSubtitle}>
-                Connecting you with your therapist
-              </Text>
+            <View style={styles.cancelCallIcon}>
+              <Text style={styles.cancelCallText}>✕</Text>
             </View>
-
-            <View style={styles.therapistInfoModal}>
-              <View style={styles.therapistAvatarLarge}>
-                <Text style={styles.therapistAvatarTextLarge}>
-                  {currentCall.therapist.name.charAt(0)}
-                </Text>
-              </View>
-              <Text style={styles.therapistNameLarge}>
-                {currentCall.therapist.name}
-              </Text>
-              <Text style={styles.callingStatus}>Waiting for response...</Text>
-            </View>
-
-            <View style={styles.callingRipple}>
-              <Animated.View style={[styles.ripple, styles.ripple1]} />
-              <Animated.View style={[styles.ripple, styles.ripple2]} />
-              <Animated.View style={[styles.ripple, styles.ripple3]} />
-            </View>
-
-            <TouchableOpacity
-              style={styles.cancelCallButton}
-              onPress={cancelCall}
-            >
-              <View style={styles.cancelCallIcon}>
-                <Text style={styles.cancelCallText}>✕</Text>
-              </View>
-              <Text style={styles.cancelCallLabel}>Cancel Call</Text>
-            </TouchableOpacity>
-          </LinearGradient>
-        </View>
-      </Modal>
-    );
-  };
+            <Text style={styles.cancelCallLabel}>Cancel Call</Text>
+          </TouchableOpacity>
+        </LinearGradient>
+      </View>
+    </Modal>
+  );
 
   const ProfileModal = () => (
     <Modal
@@ -395,19 +503,22 @@ export default function UserDashboard({ navigation }) {
     >
       <View style={styles.modalContainer}>
         <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Profile</Text>
+          <Text style={styles.modalTitle}>Your Profile</Text>
+
           <View style={styles.profileInfo}>
-            <Text style={styles.profileLabel}>Phone Number</Text>
-            <Text style={styles.profileValue}>{user?.phoneNumber}</Text>
+            <Text style={styles.profileLabel}>Total Coins Spent</Text>
+            <Text style={styles.profileValue}>
+              {userStats.totalSpent} coins
+            </Text>
           </View>
+
           <View style={styles.profileInfo}>
-            <Text style={styles.profileLabel}>Coin Balance</Text>
-            <Text style={styles.profileValue}>{user?.coinBalance} coins</Text>
+            <Text style={styles.profileLabel}>Total Talk Time</Text>
+            <Text style={styles.profileValue}>
+              {formatDuration(userStats.totalMinutes)}
+            </Text>
           </View>
-          <View style={styles.profileInfo}>
-            <Text style={styles.profileLabel}>Total Calls</Text>
-            <Text style={styles.profileValue}>{callHistory.length}</Text>
-          </View>
+
           <TouchableOpacity
             style={styles.modalCloseButton}
             onPress={() => setShowProfileModal(false)}
@@ -423,7 +534,7 @@ export default function UserDashboard({ navigation }) {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#667eea" />
 
-      {/* Header */}
+      {/* Header with balance indicator */}
       <LinearGradient colors={["#667eea", "#764ba2"]} style={styles.header}>
         <View style={styles.headerContent}>
           <TouchableOpacity onPress={() => setShowProfileModal(true)}>
@@ -440,6 +551,11 @@ export default function UserDashboard({ navigation }) {
               <Text style={styles.coinBalance}>
                 {user?.coinBalance || 0} coins
               </Text>
+              {user?.coinBalance < 20 && (
+                <View style={styles.lowBalanceIndicator}>
+                  <Text style={styles.lowBalanceText}>Low</Text>
+                </View>
+              )}
             </View>
           </View>
           <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
@@ -447,6 +563,28 @@ export default function UserDashboard({ navigation }) {
           </TouchableOpacity>
         </View>
       </LinearGradient>
+
+      {/* Stats Summary */}
+      {activeTab === "therapists" && (
+        <View style={styles.statsContainer}>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{userStats.totalCalls}</Text>
+            <Text style={styles.statLabel}>Total Calls</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{userStats.totalSpent}</Text>
+            <Text style={styles.statLabel}>Coins Spent</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>
+              {formatDuration(userStats.totalMinutes)}
+            </Text>
+            <Text style={styles.statLabel}>Talk Time</Text>
+          </View>
+        </View>
+      )}
 
       {/* Tabs */}
       <View style={styles.tabContainer}>
@@ -538,6 +676,7 @@ export default function UserDashboard({ navigation }) {
         )}
       </View>
 
+      <CallingModal />
       <ProfileModal />
     </View>
   );
@@ -593,17 +732,62 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
   },
+  lowBalanceIndicator: {
+    backgroundColor: "#ff6b6b",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 8,
+  },
+  lowBalanceText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   logoutButton: {
     padding: 10,
   },
   logoutIcon: {
     fontSize: 20,
   },
-  tabContainer: {
+  statsContainer: {
     flexDirection: "row",
     backgroundColor: "#fff",
     marginHorizontal: 20,
     marginTop: -10,
+    borderRadius: 15,
+    padding: 15,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    marginBottom: 10,
+  },
+  statItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  statNumber: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 4,
+  },
+  statLabel: {
+    fontSize: 12,
+    color: "#666",
+  },
+  statDivider: {
+    width: 1,
+    backgroundColor: "#e9ecef",
+    marginHorizontal: 15,
+  },
+  tabContainer: {
+    flexDirection: "row",
+    backgroundColor: "#fff",
+    marginHorizontal: 20,
+    marginTop: 10,
     borderRadius: 15,
     elevation: 5,
     shadowColor: "#000",
@@ -825,7 +1009,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     padding: 30,
     borderRadius: 20,
-    width: width * 0.8,
+    width: width * 0.85,
     elevation: 10,
   },
   modalTitle: {
@@ -837,6 +1021,9 @@ const styles = StyleSheet.create({
   },
   profileInfo: {
     marginBottom: 15,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f0f0f0",
   },
   profileLabel: {
     fontSize: 14,
@@ -847,6 +1034,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
     color: "#333",
+  },
+  balanceText: {
+    color: "#4CAF50",
   },
   modalCloseButton: {
     backgroundColor: "#667eea",
@@ -865,6 +1055,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
   },
   callingModalContent: {
     width: width * 0.9,
@@ -921,29 +1112,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "rgba(255, 255, 255, 0.8)",
     textAlign: "center",
+    marginBottom: 20,
   },
-  callingRipple: {
-    position: "absolute",
-    top: "50%",
-    left: "50%",
-    transform: [{ translateX: -60 }, { translateY: -60 }],
-  },
-  ripple: {
-    position: "absolute",
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.3)",
-  },
-  ripple1: {
-    animationDelay: "0s",
-  },
-  ripple2: {
-    animationDelay: "1s",
-  },
-  ripple3: {
-    animationDelay: "2s",
+  loadingContainer: {
+    marginTop: 20,
   },
   cancelCallButton: {
     alignItems: "center",
