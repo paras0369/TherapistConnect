@@ -11,6 +11,10 @@
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.1.2",
+    "@react-native-community/push-notification-ios": "^1.11.0",
+    "@react-native-firebase/analytics": "^22.2.0",
+    "@react-native-firebase/app": "^22.2.0",
+    "@react-native-firebase/messaging": "^22.2.0",
     "@react-navigation/native": "^7.1.9",
     "@react-navigation/stack": "^7.3.2",
     "@reduxjs/toolkit": "^2.8.2",
@@ -20,6 +24,7 @@
     "react-native-gesture-handler": "^2.25.0",
     "react-native-incall-manager": "^4.2.1",
     "react-native-linear-gradient": "^2.8.3",
+    "react-native-push-notification": "^8.1.1",
     "react-native-reanimated": "^3.17.5",
     "react-native-safe-area-context": "^5.4.1",
     "react-native-screens": "^4.10.0",
